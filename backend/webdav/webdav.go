@@ -164,11 +164,9 @@ Set to 0 to disable chunked uploading.
 			Help:     "Exclude ownCloud mounted storages",
 			Advanced: true,
 			Default:  false,
-		},
-			fshttp.UnixSocketConfig,
-			{
-				Name: "auth_redirect",
-				Help: `Preserve authentication on redirect.
+		}, fshttp.UnixSocketConfig, {
+			Name: "auth_redirect",
+			Help: `Preserve authentication on redirect.
 
 If the server redirects rclone to a new domain when it is trying to
 read a file then normally rclone will drop the Authorization: header
@@ -181,9 +179,26 @@ However this is desirable in some circumstances. If you are getting
 an error like "401 Unauthorized" when rclone is attempting to read
 files from the webdav server then you can try this option.
 `,
-				Advanced: true,
-				Default:  false,
-			}},
+			Advanced: true,
+			Default:  false,
+		}, {
+			Name:     "server",
+			Help:     "Target server IP or CDN domain to override DNS resolution.\n\nE.g. 1.2.3.4 or cdn.example.com.",
+			Advanced: true,
+		}, {
+			Name:     "insecure",
+			Help:     "Ignore TLS certificate errors (allow insecure HTTPS connections for this remote).",
+			Default:  false,
+			Advanced: true,
+		}, {
+			Name:     "proxy",
+			Help:     "Independent HTTP/HTTPS/SOCKS proxy for this remote.\n\nE.g. http://user:pass@domain.com:8080",
+			Advanced: true,
+		}, {
+			Name:     "relay_url",
+			Help:     "Relay URL to forward the HTTP requests (similar to domain fronting).",
+			Advanced: true,
+		}},
 	})
 }
 
@@ -203,6 +218,11 @@ type Options struct {
 	ExcludeMounts      bool                 `config:"owncloud_exclude_mounts"`
 	UnixSocket         string               `config:"unix_socket"`
 	AuthRedirect       bool                 `config:"auth_redirect"`
+
+	Server   string `config:"server"`
+	Insecure bool   `config:"insecure"`
+	Proxy    string `config:"proxy"`
+	RelayURL string `config:"relay_url"`
 }
 
 // Fs represents a remote webdav
@@ -491,24 +511,39 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 
 	var client *http.Client
-	if opt.UnixSocket == "" {
-		client = fshttp.NewClient(ctx)
-	} else {
+	if opt.UnixSocket != "" {
 		client = fshttp.NewClientWithUnixSocket(ctx, opt.UnixSocket)
+	} else {
+		customOpts := &fshttp.CustomOptions{
+			Server:   opt.Server,
+			Insecure: opt.Insecure,
+			Proxy:    opt.Proxy,
+			RelayURL: opt.RelayURL,
+		}
+		client = fshttp.NewClientWithCustomOptions(ctx, customOpts)
 	}
 	if opt.Vendor == "sharepoint-ntlm" {
 		// Disable transparent HTTP/2 support as per https://golang.org/pkg/net/http/ ,
 		// otherwise any connection to IIS 10.0 fails with 'stream error: stream ID 39; HTTP_1_1_REQUIRED'
 		// https://docs.microsoft.com/en-us/iis/get-started/whats-new-in-iis-10/http2-on-iis says:
 		// 'Windows authentication (NTLM/Kerberos/Negotiate) is not supported with HTTP/2.'
-		t := fshttp.NewTransportCustom(ctx, func(t *http.Transport) {
-			t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-		})
+		var baseTransport *http.Transport
+		if tr, ok := client.Transport.(*fshttp.Transport); ok {
+			baseTransport = tr.Transport
+		} else if relay, ok := client.Transport.(*fshttp.RelayRoundTripper); ok {
+			if tr, ok := relay.Base.(*fshttp.Transport); ok {
+				baseTransport = tr.Transport
+			}
+		}
+
+		if baseTransport != nil {
+			baseTransport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		}
 
 		// Add NTLM layer
 		client.Transport = &safeRoundTripper{
 			fs: f,
-			rt: ntlmssp.Negotiator{RoundTripper: t},
+			rt: ntlmssp.Negotiator{RoundTripper: client.Transport},
 		}
 	}
 	f.srv = rest.NewClient(client).SetRoot(u.String())

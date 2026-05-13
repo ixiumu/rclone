@@ -464,6 +464,23 @@ isn't always desirable to set the permissions from the metadata.
 				encoder.EncodeRightSpace |
 				encoder.EncodeWin |
 				encoder.EncodeInvalidUtf8),
+		}, {
+			Name:     "server",
+			Help:     "Target server IP or CDN domain to override DNS resolution.\n\nE.g. 1.2.3.4 or cdn.example.com.",
+			Advanced: true,
+		}, {
+			Name:     "insecure",
+			Help:     "Ignore TLS certificate errors (allow insecure HTTPS connections for this remote).",
+			Default:  false,
+			Advanced: true,
+		}, {
+			Name:     "proxy",
+			Help:     "Independent HTTP/HTTPS/SOCKS proxy for Google Drive.\n\nE.g. http://user:pass@domain.com:8080",
+			Advanced: true,
+		}, {
+			Name:     "relay_url",
+			Help:     "Relay URL to forward the HTTP requests (similar to domain fronting).",
+			Advanced: true,
 		}}...),
 	})
 }
@@ -784,6 +801,11 @@ type Options struct {
 	Delta                   bool                 `config:"delta"`
 	Enc                     encoder.MultiEncoder `config:"encoding"`
 	MetadataPermissions     rwChoice             `config:"metadata_permissions"`
+
+	Server   string `config:"server"`
+	Insecure bool   `config:"insecure"`
+	Proxy    string `config:"proxy"`
+	RelayURL string `config:"relay_url"`
 }
 
 // Fs represents a remote OneDrive
@@ -1075,7 +1097,13 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, err
 	}
 
-	client := fshttp.NewClient(ctx)
+	customOpts := &fshttp.CustomOptions{
+		Server:   opt.Server,
+		Insecure: opt.Insecure,
+		Proxy:    opt.Proxy,
+		RelayURL: opt.RelayURL,
+	}
+	client := fshttp.NewClientWithCustomOptions(ctx, customOpts)
 	root = parsePath(root)
 	oAuthClient, ts, err := oauthutil.NewClientWithBaseClient(ctx, name, m, oauthConfig, client)
 	if err != nil {

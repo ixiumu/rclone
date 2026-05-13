@@ -763,6 +763,23 @@ See: https://developers.google.com/workspace/drive/api/guides/limited-expansive-
 				Value: "true",
 				Help:  "Get GCP IAM credentials from the environment (env vars or IAM).",
 			}},
+		}, {
+			Name:     "server",
+			Help:     "Target server IP or CDN domain to override DNS resolution.\n\nE.g. 1.2.3.4 or cdn.example.com.",
+			Advanced: true,
+		}, {
+			Name:     "insecure",
+			Help:     "Ignore TLS certificate errors (allow insecure HTTPS connections for this remote).",
+			Default:  false,
+			Advanced: true,
+		}, {
+			Name:     "proxy",
+			Help:     "Independent HTTP/HTTPS/SOCKS proxy for Google Drive.\n\nE.g. http://user:pass@domain.com:8080",
+			Advanced: true,
+		}, {
+			Name:     "relay_url",
+			Help:     "Relay URL to forward the HTTP requests (similar to domain fronting).",
+			Advanced: true,
 		}}...),
 	})
 
@@ -826,6 +843,11 @@ type Options struct {
 	EnforceExpansiveAccess    bool                 `config:"metadata_enforce_expansive_access"`
 	Enc                       encoder.MultiEncoder `config:"encoding"`
 	EnvAuth                   bool                 `config:"env_auth"`
+
+	Server   string `config:"server"`
+	Insecure bool   `config:"insecure"`
+	Proxy    string `config:"proxy"`
+	RelayURL string `config:"relay_url"`
 }
 
 // Fs represents a remote drive server
@@ -1255,14 +1277,27 @@ func parseExtensions(extensionsIn ...string) (extensions, mimeTypes []string, er
 
 // getClient makes an http client according to the options
 func getClient(ctx context.Context, opt *Options) *http.Client {
-	t := fshttp.NewTransportCustom(ctx, func(t *http.Transport) {
-		if opt.DisableHTTP2 {
-			t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-		}
-	})
-	return &http.Client{
-		Transport: t,
+	customOpts := &fshttp.CustomOptions{
+		Server:   opt.Server,
+		Insecure: opt.Insecure,
+		Proxy:    opt.Proxy,
+		RelayURL: opt.RelayURL,
 	}
+	client := fshttp.NewClientWithCustomOptions(ctx, customOpts)
+	if opt.DisableHTTP2 {
+		var baseTransport *http.Transport
+		if tr, ok := client.Transport.(*fshttp.Transport); ok {
+			baseTransport = tr.Transport
+		} else if relay, ok := client.Transport.(*fshttp.RelayRoundTripper); ok {
+			if tr, ok := relay.Base.(*fshttp.Transport); ok {
+				baseTransport = tr.Transport
+			}
+		}
+		if baseTransport != nil {
+			baseTransport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		}
+	}
+	return client
 }
 
 func getServiceAccountClient(ctx context.Context, opt *Options, credentialsData []byte) (*http.Client, error) {
