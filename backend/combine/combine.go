@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -194,6 +195,9 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (outFs fs
 		content := ""
 		if len(parts) == 2 {
 			content = parts[1]
+			if unquoted, err := strconv.Unquote(`"` + content + `"`); err == nil {
+				content = unquoted
+			}
 		}
 		if !strings.ContainsRune(name, '/') {
 			f.files[name] = &virtual{
