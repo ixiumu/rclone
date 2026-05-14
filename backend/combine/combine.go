@@ -61,6 +61,7 @@ Embedded spaces can be added using quotes
 // Options defines the configuration for this backend
 type Options struct {
 	Upstreams fs.SpaceSepList `config:"upstreams"`
+	Files     fs.SpaceSepList `config:"files"`
 }
 
 // Fs represents a combine of upstreams
@@ -72,6 +73,7 @@ type Fs struct {
 	hashSet   hash.Set             // common hashes
 	when      time.Time            // directory times
 	upstreams map[string]*upstream // map of upstreams
+	files     map[string]*virtual  // map of virtual object
 }
 
 // adjustment stores the info to add a prefix to a path or chop characters off
@@ -162,7 +164,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (outFs fs
 		return nil, err
 	}
 	// Backward compatible to old config
-	if len(opt.Upstreams) == 0 {
+	if len(opt.Upstreams) == 0 && len(opt.Files) == 0 {
 		return nil, errors.New("combine can't point to an empty upstream - check the value of the upstreams setting")
 	}
 	for _, u := range opt.Upstreams {
@@ -181,7 +183,26 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (outFs fs
 		root:      root,
 		opt:       *opt,
 		upstreams: make(map[string]*upstream, len(opt.Upstreams)),
+		files:     make(map[string]*virtual),
 		when:      time.Now(),
+	}
+
+	modTime := time.Unix(0, 0)
+	for _, fileDef := range opt.Files {
+		parts := strings.SplitN(fileDef, "=", 2)
+		name := parts[0]
+		content := ""
+		if len(parts) == 2 {
+			content = parts[1]
+		}
+		if !strings.ContainsRune(name, '/') {
+			f.files[name] = &virtual{
+				remote:  name,
+				content: []byte(content),
+				f:       f,
+				modTime: modTime,
+			}
+		}
 	}
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -838,6 +859,9 @@ func (f *Fs) ListP(ctx context.Context, dir string, callback fs.ListRCallback) e
 			d := fs.NewLimitedDirWrapper(combineDir, fs.NewDir(combineDir, f.when))
 			entries = append(entries, d)
 		}
+		for _, vFile := range f.files {
+			entries = append(entries, vFile)
+		}
 		return callback(entries)
 	}
 	u, uRemote, err := f.findUpstream(dir)
@@ -927,6 +951,9 @@ func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (
 
 // NewObject creates a new remote combine file object
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	if obj, ok := f.files[remote]; ok {
+		return obj, nil
+	}
 	u, uRemote, err := f.findUpstream(remote)
 	if err != nil {
 		return nil, err
